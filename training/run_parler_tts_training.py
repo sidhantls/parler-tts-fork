@@ -64,6 +64,7 @@ from training.utils import (
 from training.arguments import ModelArguments, DataTrainingArguments, ParlerTTSTrainingArguments
 from training.data import load_multiple_datasets, DataCollatorParlerTTSWithPadding, DataCollatorEncodecWithPadding
 from training.eval import clap_similarity, wer, si_sdr
+from peft import LoraConfig, get_peft_model
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +337,15 @@ def main():
     # enable gradient checkpointing if necessary
     if training_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
+    
+    # add LORA adapters if required
+    if training_args.use_lora == True: 
+        lora_config = LoraConfig(lora_alpha=training_args.lora_alpha, lora_dropout=training_args.lora_dropout, 
+                                r=training_args.lora_r, bias="none", task_type="CAUSAL_LM",
+                                target_modules=["k_proj", "v_proj", "q_proj", "fc1", "fc2", # all linear except prediction head
+                                 "self_attn.out_proj", "encoder_attn.out_proj"], # only using "out_proj" matches with a conv layer, not compabible
+        ) 
+        model = get_peft_model(model, lora_config)
 
     # 4. Now we preprocess the datasets including loading the audio, resampling and normalization
     # Thankfully, `datasets` takes care of automatically loading and resampling the audio,
@@ -1017,6 +1027,12 @@ def main():
                     # safe_serialization=False to avoid shared tensors saving issue (TODO(YL): it's a temporary fix)
                     # https://github.com/huggingface/transformers/issues/27293#issuecomment-1872560074
                     accelerator.save_state(output_dir=intermediate_dir, safe_serialization=False)
+
+                    # accelerator save_state dont save lora adapters separately,
+                    # to load checkpoints, need adapter config and weights to be saved
+                    if training_args.use_lora:
+                        model.save_pretrained(intermediate_dir) 
+
                     accelerator.wait_for_everyone()
                     if accelerator.is_main_process:
                         rotate_checkpoints(
